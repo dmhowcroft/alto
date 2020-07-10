@@ -16,6 +16,7 @@ import de.up.ling.irtg.automata.TreeAutomaton;
 import de.up.ling.irtg.automata.Rule;
 import de.up.ling.irtg.automata.WeightedTree;
 import de.up.ling.irtg.automata.condensed.CondensedTreeAutomaton;
+import de.up.ling.irtg.automata.language_iteration.SortedLanguageIterator;
 import de.up.ling.irtg.automata.pruning.PruningPolicy;
 import de.up.ling.irtg.codec.InputCodec;
 import de.up.ling.irtg.codec.IrtgInputCodec;
@@ -812,6 +813,131 @@ public class InterpretedTreeAutomaton implements Serializable {
                         parsedInst.setComments("parse_time_ms", Double.toString(sw.getTimeBefore(1) / 1000000),
                                 "weight=", Double.toString(t.getWeight()));
                         corpusConsumer.accept(parsedInst);
+                    }
+
+                    if (listener != null) {
+                        i++;
+                        listener.accept(i, N, "Parsing " + (i + 1) + "/" + N);
+                    }
+                }
+            }
+        } finally {
+            // turn logging back on
+            Logging.get().setLevel(oldLevel);
+        }
+    }
+
+    /**
+     * Reads all inputs for this IRTG from a corpus and parses them. This
+     * behaves like {@link #bulkParse(de.up.ling.irtg.corpus.Corpus, java.util.function.Predicate, java.util.function.Consumer, de.up.ling.irtg.util.ProgressListener)
+     * }
+     * with an instance filter that always returns true.
+     *
+     * @param input
+     * @param corpusConsumer
+     * @param listener
+     *
+     */
+    public void bulkParseNbest(Corpus input, Consumer<Instance> corpusConsumer, ProgressListener listener, int numParsesToKeep) {
+        bulkParseNbest(input, null, corpusConsumer, listener, numParsesToKeep);
+    }
+
+    /**
+     * Reads inputs for this IRTG from a corpus and parses them. The input
+     * corpus must be suitable for this IRTG (i.e., use a subset of the
+     * interpretations it defines). If the corpus has charts attached, these
+     * will be used; otherwise, each instance for which the "filter" is true is
+     * parsed. We then compute the best derivation tree from each chart using
+     * Viterbi, and map it to all interpretations of the IRTG. This yields a
+     * "completed" {@link Instance} (consisting of the derivation tree and
+     * values on all interpretations), which we write to the given
+     * corpusConsumer (e.g., a {@link CorpusWriter}). If a non-null value is
+     * passed as the "listener", it is notified after each instance has been
+     * written.<p>
+     *
+     * Note that the output corpus may contain fewer instances than the input
+     * corpus, if the "filter" returned false on some of the input instances.
+     *
+     * @param input
+     * @param filter
+     * @param corpusConsumer
+     * @param listener
+     * @param numParsesToKeep
+     */
+    public void bulkParseNbest(Corpus input, Predicate<Instance> filter, Consumer<Instance> corpusConsumer, ProgressListener listener, int numParsesToKeep) {
+        int N = input.getNumberOfInstances();
+        int i = 0;
+
+        if (listener != null) {
+            listener.accept(i, N, "Parsing 1/" + N);
+        }
+
+        // suppress INFOs from intersection algorithms
+        Level oldLevel = Logging.get().getLevel();
+        Logging.get().setLevel(Level.WARNING);
+
+        try {
+            for (Instance inst : input) {
+                if ((filter == null) || filter.test(inst)) {
+                    Map<String, String> instComments = inst.getComments();
+                    CpuTimeStopwatch sw = new CpuTimeStopwatch();
+                    sw.record(0);
+
+//                    System.err.println("parse: " + inst.getInputObjects());
+//                    System.err.println("   - " + input.hasCharts());
+                    TreeAutomaton chart = input.hasCharts() ? inst.getChart() : parseInputObjects(inst.getInputObjects());
+//                    System.err.println("DONE PARSING; counting trees now");
+                    long numPossibleLFs = chart.countTrees();
+//                    System.err.println(chart.languageRaw().size());
+                    SortedLanguageIterator languageIterator = (SortedLanguageIterator) chart.sortedLanguageIterator();
+                    WeightedTree t = languageIterator.next();
+
+                    if (t == null) {
+                        Instance parsedInst = new Instance();
+                        parsedInst.setAsNull();
+                        parsedInst.setDerivationTree(null);
+                        parsedInst.setComments("could not parse", inst.toString());
+                        corpusConsumer.accept(parsedInst);
+
+                        Logging.get().warning("Could not parse: " + inst);
+                    } else {
+                        int count = 0;
+                        boolean getNextTree = true;
+                        while (getNextTree && t != null) {
+                                Tree<String> tWithStrings = getAutomaton().getSignature().resolve(t.getTree());
+
+                                Map<String, Object> values = new HashMap<>();
+                                for (String intp : getInterpretations().keySet()) {
+                                    values.put(intp, getInterpretation(intp).interpret(tWithStrings));
+                                }
+
+                                sw.record(1);
+
+                                Instance parsedInst = new Instance();
+                                parsedInst.setInputObjects(values);
+                                parsedInst.setDerivationTree(t.getTree());
+                                Map<String, String> parsedInstComments = new HashMap<>();
+                                if (instComments != null) {
+                                    for (String key : instComments.keySet()) {
+                                       parsedInstComments.put(key, instComments.get(key));
+                                    }
+                                }
+                                parsedInstComments.put("parse_time_ms", Double.toString(sw.getTimeBefore(1) / 1000000));
+                                parsedInstComments.put("weight", Double.toString(t.getWeight()));
+                                parsedInstComments.put("num_possible_LFs", Long.toString(numPossibleLFs));
+                                parsedInst.setComments("parse_time_ms", Double.toString(sw.getTimeBefore(1) / 1000000),
+                                        "weight", Double.toString(t.getWeight()), "num_possible_LFs", Long.toString(numPossibleLFs));
+                                parsedInst.setComments(parsedInstComments);
+
+                                corpusConsumer.accept(parsedInst);
+
+                                count++;
+                                if (count >= numParsesToKeep) {
+                                    getNextTree = false;
+                                }
+
+                            t = languageIterator.next();
+                        }
                     }
 
                     if (listener != null) {

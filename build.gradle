@@ -27,6 +27,7 @@ dependencies {
     antlr   'org.antlr:antlr4:4.7.2'
     api 'com.github.coli-saar:basics:2909d4b20d9a9cb47ef'
     api 'it.unimi.dsi:fastutil:8.2.2'
+    compile 'info.picocli:picocli:4.4.0'
     implementation 'org.springframework:spring-jdbc:4.2.2.RELEASE'
     implementation 'mysql:mysql-connector-java:5.1.37'
     implementation 'edu.stanford.nlp:stanford-corenlp:3.8.0'
